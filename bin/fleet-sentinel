@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# fleet-sentinel
+# -----------------------------------------------------------------------------
+# Spin up a freshly-enrolled, Fleet-managed Debian VM with one command.
+#
+# Usage:
+#   fleet-sentinel <fleet_url> <enroll_secret>
+#
+# Example:
+#   fleet-sentinel https://fleet.example.com  super-secret-enroll-key
+#
+# Lifecycle:
+#   Always fresh. Each invocation stops + deletes any existing VM named
+#   "fleet-sentinel" on this host, clones the latest published golden image
+#   from ghcr.io/ds0x/fleet-sentinel-debian:latest, enrolls it into the Fleet
+#   you specify, and opens an XFCE desktop window.
+#
+# Override the image:
+#   FLEET_SENTINEL_IMAGE=ghcr.io/somebody/else:tag fleet-sentinel ...
+#
+# Run headless (no GUI window):
+#   FLEET_SENTINEL_HEADLESS=1 fleet-sentinel ...
+# -----------------------------------------------------------------------------
+set -euo pipefail
+
+VERSION="0.1.0"
+IMAGE="${FLEET_SENTINEL_IMAGE:-ghcr.io/ds0x/fleet-sentinel-debian:latest}"
+VM_NAME="${FLEET_SENTINEL_VM_NAME:-fleet-sentinel}"
+RAM_MB="${FLEET_SENTINEL_RAM_MB:-1024}"
+CPUS="${FLEET_SENTINEL_CPUS:-1}"
+DISK_GB="${FLEET_SENTINEL_DISK_GB:-8}"
+HEADLESS="${FLEET_SENTINEL_HEADLESS:-}"
+HOSTNAME_PREFIX="${FLEET_SENTINEL_HOSTNAME_PREFIX:-fleet-sentinel}"
+USER_VM=fleet
+PASS_VM=fleet
+
+# -----------------------------------------------------------------------------
+# Args + help
+# -----------------------------------------------------------------------------
+usage() {
+  cat <<EOF
+fleet-sentinel ${VERSION}
+
+A Fleet-enrolled, GUI-ready Debian VM in one command.
+
+USAGE
+  fleet-sentinel <fleet_url> <enroll_secret>
+  fleet-sentinel --help | --version
+
+ENVIRONMENT
+  FLEET_SENTINEL_IMAGE       Override the OCI image (default: $IMAGE)
+  FLEET_SENTINEL_VM_NAME     Override the Tart VM name (default: $VM_NAME)
+  FLEET_SENTINEL_RAM_MB      VM RAM in MB (default: $RAM_MB)
+  FLEET_SENTINEL_CPUS        VM vCPUs (default: $CPUS)
+  FLEET_SENTINEL_DISK_GB     VM disk in GB (default: $DISK_GB)
+  FLEET_SENTINEL_HEADLESS    Set to 1 to skip the GUI window
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)    usage; exit 0 ;;
+  -v|--version) echo "fleet-sentinel $VERSION"; exit 0 ;;
+esac
+
+[[ $# -eq 2 ]] || { usage; exit 1; }
+FLEET_URL="$1"
+FLEET_ENROLL_SECRET="$2"
+
+[[ "$FLEET_URL" =~ ^https?:// ]] \
+  || { echo "fleet_url must start with http:// or https://"; exit 1; }
+
+# -----------------------------------------------------------------------------
+# Dependency check
+# -----------------------------------------------------------------------------
+for c in tart fleetctl sshpass; do
+  command -v "$c" >/dev/null \
+    || { echo "Missing dependency: $c. Run 'brew install ds0x/tap/fleet-sentinel' to pull everything."; exit 1; }
+done
+
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
+
+# -----------------------------------------------------------------------------
+# 1. Always fresh: stop + delete any existing VM
+# -----------------------------------------------------------------------------
+if tart list 2>/dev/null | awk '{print $2}' | grep -qx "$VM_NAME"; then
+  say "Removing existing '$VM_NAME' (always-fresh lifecycle)"
+  tart stop   "$VM_NAME" 2>/dev/null || true
+  tart delete "$VM_NAME"
+fi
+
+# -----------------------------------------------------------------------------
+# 2. Clone the published image (auto-pulls if not cached locally)
+# -----------------------------------------------------------------------------
+say "Cloning $IMAGE → $VM_NAME"
+tart clone "$IMAGE" "$VM_NAME"
+tart set "$VM_NAME" --memory "$RAM_MB" --cpu "$CPUS" --disk-size "$DISK_GB"
+
+# -----------------------------------------------------------------------------
+# 3. Build a per-call fleetd .deb for the user's Fleet URL + secret
+# -----------------------------------------------------------------------------
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+say "Building fleetd ARM64 .deb via fleetctl"
+( cd "$WORK" && fleetctl package \
+    --type=deb \
+    --arch=arm64 \
+    --fleet-url="$FLEET_URL" \
+    --enroll-secret="$FLEET_ENROLL_SECRET" >/dev/null )
+DEB=$(ls "$WORK"/fleet-osquery_*_arm64.deb | head -n1)
+[[ -n "$DEB" ]] || { echo "fleetctl package did not produce an arm64 .deb"; exit 1; }
+
+cat > "$WORK/config.env" <<EOF
+FLEET_URL="$FLEET_URL"
+FLEET_ENROLL_SECRET="$FLEET_ENROLL_SECRET"
+FLEET_HOSTNAME_PREFIX="$HOSTNAME_PREFIX"
+EOF
+chmod 600 "$WORK/config.env"
+
+# -----------------------------------------------------------------------------
+# 4. Boot headless, wait for SSH, push files, run enroll
+# -----------------------------------------------------------------------------
+say "Starting '$VM_NAME' headless"
+tart run --no-graphics "$VM_NAME" >/tmp/fleet-sentinel-$VM_NAME.log 2>&1 &
+TART_PID=$!
+
+IP=""
+for _ in $(seq 1 60); do
+  IP=$(tart ip "$VM_NAME" 2>/dev/null || true)
+  [[ -n "$IP" ]] && break
+  sleep 2
+done
+[[ -n "$IP" ]] || { warn "No IP from VM after 2 min. Check /tmp/fleet-sentinel-$VM_NAME.log"; kill $TART_PID; exit 1; }
+say "VM IP: $IP"
+
+say "Waiting for SSH"
+for _ in $(seq 1 30); do
+  sshpass -p "$PASS_VM" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 \
+    "${USER_VM}@${IP}" true 2>/dev/null && break
+  sleep 2
+done
+
+say "Uploading config + fleetd .deb"
+sshpass -p "$PASS_VM" scp -q -o StrictHostKeyChecking=no \
+  "$DEB" "${USER_VM}@${IP}:/tmp/fleet-osquery_arm64.deb"
+sshpass -p "$PASS_VM" scp -q -o StrictHostKeyChecking=no \
+  "$WORK/config.env" "${USER_VM}@${IP}:/tmp/config.env"
+
+say "Enrolling into Fleet at $FLEET_URL"
+sshpass -p "$PASS_VM" ssh -o StrictHostKeyChecking=no "${USER_VM}@${IP}" bash <<'REMOTE'
+set -euo pipefail
+sudo install -m 0644 /tmp/fleet-osquery_arm64.deb /opt/fleet-sentinel/fleet-osquery_arm64.deb
+sudo install -m 0600 /tmp/config.env              /etc/fleet-sentinel/config.env
+rm -f /tmp/fleet-osquery_arm64.deb /tmp/config.env
+sudo /opt/fleet-sentinel/enroll.sh
+REMOTE
+
+# Capture the new hostname so we can echo it for the user.
+NEWHOST=$(sshpass -p "$PASS_VM" ssh -o StrictHostKeyChecking=no "${USER_VM}@${IP}" hostname 2>/dev/null || echo "(unknown)")
+
+# -----------------------------------------------------------------------------
+# 5. GUI window (or stay headless)
+# -----------------------------------------------------------------------------
+if [[ -z "$HEADLESS" ]]; then
+  say "Switching to a graphical session (closing window won't kill the VM)"
+  sshpass -p "$PASS_VM" ssh -o StrictHostKeyChecking=no "${USER_VM}@${IP}" \
+    'sudo shutdown -r now' || true
+  # Wait for the headless process to exit, then re-run with a window.
+  for _ in $(seq 1 30); do
+    kill -0 $TART_PID 2>/dev/null || break
+    sleep 2
+  done
+  kill $TART_PID 2>/dev/null || true
+  tart run "$VM_NAME" &
+fi
+
+cat <<EOF
+
+==> Done.
+
+  Fleet URL:    $FLEET_URL
+  VM (tart):    $VM_NAME       (RAM ${RAM_MB} MB, ${CPUS} vCPU)
+  Hostname:     $NEWHOST       (random per-call suffix)
+  SSH:          ssh ${USER_VM}@${IP}   (password: ${PASS_VM})
+
+The VM should appear in your Fleet UI as a new host within ~30 seconds.
+
+To stop it later:    tart stop $VM_NAME
+To delete it:        tart delete $VM_NAME
+To start fresh:      run fleet-sentinel again (auto-deletes the existing one)
+EOF

@@ -1,0 +1,7 @@
+*.deb
+*.iso
+*.qcow2
+*.img
+.DS_Store
+.fleet-sentinel-work/
+golden/debian-*-arm64-netinst.iso
