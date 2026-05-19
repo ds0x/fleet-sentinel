@@ -1,6 +1,6 @@
 # fleet-sentinel
 
-A Fleet-enrolled, GUI-ready Debian VM on Apple Silicon, in **one command**.
+A Fleet-enrolled, GUI-ready Linux VM on Apple Silicon, in **one command**.
 
 ```bash
 brew install ds0x/tap/fleet-sentinel
@@ -9,7 +9,7 @@ fleet-sentinel https://fleet.example.com  super-secret-enroll-key
 
 Behind the scenes, that single line:
 
-1. Pulls a pre-built ARM64 Debian + XFCE image from `ghcr.io/ds0x/fleet-sentinel-debian:latest`.
+1. Pulls a pre-built ARM64 Ubuntu + XFCE image from `ghcr.io/ds0x/fleet-sentinel-ubuntu:latest`.
 2. Stops + deletes any previous `fleet-sentinel` VM (always-fresh lifecycle).
 3. Clones the golden image as a new Tart VM.
 4. Builds a one-off `fleetd` package for *your* Fleet URL and enroll secret.
@@ -25,7 +25,8 @@ replaced.
 - Apple Silicon Mac (M1/M2/M3/M4).
 - macOS 13 or later.
 - Outbound HTTPS to `ghcr.io` (image pull) and to your Fleet server (enrollment).
-- ~1.5 GB free disk for the image, plus 8 GB per running VM.
+- ~5 GB free disk for the image, plus a few GB per running VM (Tart uses
+  a 50 GB thin-provisioned virtual disk; real on-disk size scales with use).
 
 Homebrew pulls all runtime deps for you (`tart`, `fleetctl`, `sshpass`).
 No manual install needed.
@@ -42,11 +43,10 @@ fleet-sentinel --version
 
 | Variable                          | Default                                       | Purpose |
 |-----------------------------------|-----------------------------------------------|---------|
-| `FLEET_SENTINEL_IMAGE`            | `ghcr.io/ds0x/fleet-sentinel-debian:latest`   | Use a different golden image |
+| `FLEET_SENTINEL_IMAGE`            | `ghcr.io/ds0x/fleet-sentinel-ubuntu:latest`   | Use a different golden image |
 | `FLEET_SENTINEL_VM_NAME`          | `fleet-sentinel`                              | Override the Tart VM name |
 | `FLEET_SENTINEL_RAM_MB`           | `1024`                                        | RAM allocated to the VM |
 | `FLEET_SENTINEL_CPUS`             | `1`                                           | vCPUs allocated to the VM |
-| `FLEET_SENTINEL_DISK_GB`          | `8`                                           | Disk size (image must fit) |
 | `FLEET_SENTINEL_HEADLESS`         | _(unset)_                                     | Set to `1` to skip the GUI window |
 | `FLEET_SENTINEL_HOSTNAME_PREFIX`  | `fleet-sentinel`                              | Used to form the in-VM hostname |
 
@@ -76,7 +76,7 @@ Each call enrolls as a separate host (random 6-hex hostname suffix per VM).
 
 ## Practical capacity on Apple Silicon
 
-The default profile (1 GB RAM / 1 vCPU / 8 GB disk) supports roughly:
+The default profile (1 GB RAM / 1 vCPU; ~3–5 GB actual disk per VM) supports roughly:
 
 - 24 GB Mac → ~12–14 concurrent VMs before swap pressure
 - 32 GB Mac → ~20 concurrent VMs
@@ -92,7 +92,7 @@ If you don't want to install the wrapper, the manual two-command
 equivalent is:
 
 ```bash
-tart clone ghcr.io/ds0x/fleet-sentinel-debian:latest fleet-sentinel
+tart clone ghcr.io/ds0x/fleet-sentinel-ubuntu:latest fleet-sentinel
 tart run  fleet-sentinel
 # ...then SSH in and place /etc/fleet-sentinel/config.env + the .deb yourself,
 # then run /opt/fleet-sentinel/enroll.sh. See BUILDER.md.
@@ -113,7 +113,7 @@ fleet-sentinel/
 ├── golden/
 │   ├── build-golden.sh          ← Mac-side: builds the golden Tart VM
 │   ├── push-image.sh            ← Mac-side: pushes it to ghcr.io
-│   └── setup-debian.sh          ← runs inside the VM during build
+│   └── setup-vm.sh              ← runs inside the VM during build
 └── homebrew-tap/
     ├── README.md                ← tap repo conventions
     └── Formula/

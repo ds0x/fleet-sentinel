@@ -18,9 +18,12 @@ class FleetSentinel < Formula
   license "MIT"
   version "0.1.0"
 
-  # Runtime dependencies. Homebrew will pull these automatically.
+  # Runtime dependencies. Homebrew pulls all three automatically.
+  # NOTE: fleetctl isn't in homebrew-core (the `fleet-cli` formula in core is
+  # Rancher's Kubernetes Fleet — a different product). The dependency below
+  # uses ds0x's own tap. Requires the tap repo to be named `homebrew-fleetctl`.
   depends_on "cirruslabs/cli/tart"
-  depends_on "fleetdm/fleet/fleetctl"
+  depends_on "ds0x/fleetctl/fleetctl"
   depends_on "hudochenkov/sshpass/sshpass"
 
   def install
@@ -35,8 +38,8 @@ class FleetSentinel < Formula
     <<~EOS
       fleet-sentinel needs Apple Silicon (M-series) to run Tart VMs.
 
-      First use will pull the Debian image (~1.5 GB) from ghcr.io:
-        ghcr.io/ds0x/fleet-sentinel-debian:latest
+      First use will pull the Ubuntu image (~1.8 GB) from ghcr.io:
+        ghcr.io/ds0x/fleet-sentinel-ubuntu:latest
 
       Usage:
         fleet-sentinel https://fleet.example.com  YOUR_ENROLL_SECRET

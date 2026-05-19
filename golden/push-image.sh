@@ -4,7 +4,7 @@
 # Publish the freshly-built golden Tart image to ghcr.io.
 #
 # Prereqs:
-#   1. `tart` installed and a built VM named "fleet-sentinel-debian" exists
+#   1. `tart` installed and a built VM named "fleet-sentinel-ubuntu" exists
 #      (run ./build-golden.sh first).
 #   2. A GitHub Personal Access Token with `write:packages` scope, exported as
 #      GITHUB_TOKEN. Generate at: https://github.com/settings/tokens
@@ -12,15 +12,15 @@
 #   3. GITHUB_USER set to your GitHub username (defaults to $USER).
 #
 # Pushes two tags:
-#   ghcr.io/ds0x/fleet-sentinel-debian:latest
-#   ghcr.io/ds0x/fleet-sentinel-debian:<VERSION>      (default: today's date)
+#   ghcr.io/ds0x/fleet-sentinel-ubuntu:latest
+#   ghcr.io/ds0x/fleet-sentinel-ubuntu:<VERSION>      (default: today's date)
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-VM="${VM_NAME:-fleet-sentinel-debian}"
+VM="${VM_NAME:-fleet-sentinel-ubuntu}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 NAMESPACE="${NAMESPACE:-ds0x}"
-IMAGE="${IMAGE:-fleet-sentinel-debian}"
+IMAGE="${IMAGE:-fleet-sentinel-ubuntu}"
 VERSION="${VERSION:-$(date +%Y.%m.%d)}"
 
 LATEST="$REGISTRY/$NAMESPACE/$IMAGE:latest"

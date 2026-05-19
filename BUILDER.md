@@ -1,4 +1,4 @@
-# Building and publishing the fleet-sentinel-debian image
+# Building and publishing the fleet-sentinel-ubuntu image
 
 Audience: **you (the maintainer)**. End users never need this — they just
 `brew install ds0x/tap/fleet-sentinel` and run the wrapper.
@@ -10,7 +10,9 @@ image on ghcr.io in roughly 30 minutes.
 
 ```bash
 brew install cirruslabs/cli/tart
-brew install fleetctl
+# fleetctl ships via ds0x's own Homebrew tap (Fleet's CLI isn't in
+# homebrew-core; `fleet-cli` in core is Rancher's Kubernetes Fleet):
+brew install ds0x/fleetctl/fleetctl
 brew install hudochenkov/sshpass/sshpass
 brew install curl
 ```
@@ -28,32 +30,31 @@ export GITHUB_USER=ds0x
 
 ```bash
 cd golden/
-chmod +x build-golden.sh setup-debian.sh push-image.sh
+chmod +x build-golden.sh setup-vm.sh push-image.sh
 ./build-golden.sh
 ```
 
 The script will:
 
-1. Download the Debian 12 ARM64 netinst ISO (skipped if already present
-   in the current directory).
-2. Create an empty Tart Linux VM named `fleet-sentinel-debian`.
-3. Open the installer in a Tart window. **You walk through the install
-   once.** The script prints the exact settings to use before launching.
-4. After the installer finishes and the VM is sitting at the login
-   prompt, the script automatically reconnects headlessly, scp's
-   `setup-debian.sh`, runs it, and shuts the VM down.
+1. `tart clone ghcr.io/cirruslabs/ubuntu:22.04 fleet-sentinel-ubuntu`
+   (first run pulls ~700 MB; subsequent rebuilds reuse the cache).
+2. Boot the VM headless, wait for SSH.
+3. scp `setup-vm.sh` and run it: installs XFCE + lightdm with autologin,
+   creates the `fleet` user, disables cloud-init, stages
+   `/opt/fleet-sentinel/enroll.sh`, removes the cirruslabs `admin` user,
+   and clears identifiers.
+4. Shut the VM down.
 
 Expected runtime:
-- ISO download: ~1–3 min
-- Interactive Debian install: ~10–15 min
-- Automated post-install provisioning: ~5–8 min
+- First run: ~5 min (~3 min pull + ~2 min provisioning)
+- Subsequent rebuilds: ~2 min
 
 At the end you have a stopped Tart VM that's ready to publish.
 
 ### Verifying the image before pushing
 
 ```bash
-tart run fleet-sentinel-debian
+tart run fleet-sentinel-ubuntu
 # Should boot to an XFCE desktop, auto-logged-in as 'fleet'.
 # Confirm /opt/fleet-sentinel/enroll.sh exists.
 # Confirm /var/log/fleet-sentinel/ exists.
@@ -68,8 +69,8 @@ tart run fleet-sentinel-debian
 
 This pushes two tags:
 
-- `ghcr.io/ds0x/fleet-sentinel-debian:latest`
-- `ghcr.io/ds0x/fleet-sentinel-debian:YYYY.MM.DD`
+- `ghcr.io/ds0x/fleet-sentinel-ubuntu:latest`
+- `ghcr.io/ds0x/fleet-sentinel-ubuntu:YYYY.MM.DD`
 
 Override the version tag if you want semver:
 
@@ -78,7 +79,7 @@ VERSION=v0.1.0 ./push-image.sh
 ```
 
 After the first push, make the package public in the GitHub UI:
-**github.com/ds0x?tab=packages → fleet-sentinel-debian → Package
+**github.com/ds0x?tab=packages → fleet-sentinel-ubuntu → Package
 settings → Change visibility → Public.** This is a one-time step per
 package; subsequent pushes keep the visibility you set.
 
@@ -135,15 +136,17 @@ Tart-on-CI requires Apple Silicon runners. Two options:
   `https://tart.run/integrations/cirrus-ci/` cover this.
 - **GitHub Actions** on a self-hosted Apple Silicon runner.
 
-The build script is already CI-friendly **except** for the interactive
-Debian install. To make it fully automated:
+The build script is fully non-interactive (it pulls a Tart-native base
+image from cirruslabs and customizes via SSH — no installer to walk),
+so dropping it into a Cirrus CI or GitHub Actions workflow on an
+Apple Silicon runner is straightforward. Stub workflow ideas:
 
-1. Author a Debian `preseed.cfg` that answers every install prompt.
-2. Inject the preseed via the kernel command line (boot the ISO with
-   `auto url=...`) or via a small HTTP server on the build host.
+- Trigger on tag push (`v*.*.*`).
+- Set up `GITHUB_TOKEN` with `write:packages` via OIDC or repo secret.
+- Run `./golden/build-golden.sh && VERSION=$TAG ./golden/push-image.sh`.
 
-That's a meaningful chunk of work and is deferred until manual builds
-are obviously the bottleneck.
+Tracking this as a follow-up rather than a blocker — manual rebuilds
+are ~5 min, fast enough to not be in the way.
 
 ## When to bump what
 

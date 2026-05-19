@@ -2,8 +2,8 @@
 
 This walkthrough takes you from "the files exist on my Mac" to
 "`brew install ds0x/tap/fleet-sentinel && fleet-sentinel <url> <secret>`
-spawns a Fleet-enrolled VM." Approx 30–60 minutes wall-clock, most of it
-spent in the Debian installer in Phase 4.
+spawns a Fleet-enrolled VM." Approx 15–25 minutes wall-clock, most of it
+the one-time ~700 MB image pull from cirruslabs in Phase 4.
 
 Throughout, replace **`ds0x`** with your actual GitHub username if
 different. (If `ds0x` IS your username, the commands work as-is.)
@@ -25,10 +25,13 @@ named `homebrew-<something>`.
 brew install gh                                  # GitHub CLI (simplest path)
 brew install git                                 # if not already
 brew install cirruslabs/cli/tart                 # Tart (Apple Silicon VMs)
-brew install fleetctl                            # Fleet's CLI
+# fleetctl: installed automatically as a Homebrew dependency of fleet-sentinel
+# in Phase 6 via ds0x's tap (the homebrew-core `fleet-cli` is a different
+# product — Rancher's Kubernetes Fleet — so we use this tap instead).
+# If you want it standalone, you can pre-install with:
+#   brew install ds0x/fleetctl/fleetctl
 brew install hudochenkov/sshpass/sshpass         # SSH-with-password helper
-brew install qemu                                # for ISO downloads' qemu-img
-brew install curl wget                           # usually present
+brew install curl                                # usually present
 ```
 
 Authenticate `gh` against GitHub (handles git auth too, opens a browser):
@@ -112,7 +115,7 @@ gh repo create ds0x/fleet-sentinel \
   --public \
   --source=. \
   --remote=origin \
-  --description "Fleet-enrolled, GUI-ready Debian VM on Apple Silicon, in one command" \
+  --description "Fleet-enrolled, GUI-ready Linux VM on Apple Silicon, in one command" \
   --push
 ```
 
@@ -187,7 +190,11 @@ gh repo create ds0x/homebrew-tap \
 
 ---
 
-## Phase 4 — Build the golden Tart image (~25 min, mostly waiting)
+## Phase 4 — Build the golden Tart image (~5 min)
+
+No ISO, no installer to walk. The script clones a Tart-native Ubuntu
+base image from cirruslabs (a one-time ~700 MB pull, cached for future
+builds), then provisions it over SSH.
 
 ```bash
 cd ~/code/fleet-sentinel/golden
@@ -196,36 +203,28 @@ cd ~/code/fleet-sentinel/golden
 
 The script will:
 
-1. Download the Debian 12 ARM64 netinst ISO (~600 MB, one-time).
-2. Create an empty Tart Linux VM called `fleet-sentinel-debian`.
-3. Boot the installer in a Tart window and pause for you to walk it.
+1. `tart clone ghcr.io/cirruslabs/ubuntu:22.04 fleet-sentinel-ubuntu`
+   (the first run pulls ~700 MB; subsequent rebuilds reuse the cache).
+2. Boot the VM headless and wait for SSH.
+3. `scp setup-vm.sh` and run it: installs XFCE + lightdm with autologin,
+   creates the `fleet` user, disables cloud-init, stages
+   `/opt/fleet-sentinel/enroll.sh`, removes the cirruslabs `admin` user,
+   and clears identifiers.
+4. Shut the VM down.
 
-Inside the installer, follow these EXACT choices (the script also prints them):
+Expected runtime:
 
-| Field | Value |
-|---|---|
-| Mode | Graphical install |
-| Hostname | `fleet-sentinel-debian` |
-| Domain | (blank) |
-| Root password | (blank — locks root) |
-| Username | `fleet` |
-| Password | `fleet` |
-| Partitioning | Guided → entire disk → single partition → write |
-| Software | **only** `SSH server` + `standard system utilities` |
-| GRUB | `/dev/vda` |
-
-When the installed system boots and shows you a `login:` prompt, the
-script automatically reconnects over SSH, scp's `setup-debian.sh`, runs
-it, and shuts the VM down. ~5–8 min for that automated stage.
+- First-ever run: ~5 min (~3 min pull + ~2 min provisioning)
+- Subsequent rebuilds: ~2 min (base image cached)
 
 When `build-golden.sh` exits cleanly, you have a stopped Tart VM ready
 to publish. Optional sanity check:
 
 ```bash
-tart run fleet-sentinel-debian
+tart run fleet-sentinel-ubuntu
 # Should boot to an XFCE desktop, auto-logged-in as 'fleet'.
 # Close the window when satisfied; that hibernates the VM.
-tart stop fleet-sentinel-debian
+tart stop fleet-sentinel-ubuntu
 ```
 
 ---
@@ -243,16 +242,16 @@ export GITHUB_USER='ds0x'                      # your actual GitHub username
 
 This pushes two tags:
 
-- `ghcr.io/ds0x/fleet-sentinel-debian:latest`
-- `ghcr.io/ds0x/fleet-sentinel-debian:YYYY.MM.DD`
+- `ghcr.io/ds0x/fleet-sentinel-ubuntu:latest`
+- `ghcr.io/ds0x/fleet-sentinel-ubuntu:YYYY.MM.DD`
 
 **One-time: make the package public.** First push creates it private.
 
 1. Visit https://github.com/ds0x?tab=packages
-2. Click `fleet-sentinel-debian`
+2. Click `fleet-sentinel-ubuntu`
 3. Right sidebar → **Package settings** → **Change visibility** → **Public** → type the name to confirm.
 
-After this, anyone with `tart` can `tart clone ghcr.io/ds0x/fleet-sentinel-debian:latest` without auth.
+After this, anyone with `tart` can `tart clone ghcr.io/ds0x/fleet-sentinel-ubuntu:latest` without auth.
 
 > If you'd rather keep the image private, skip the visibility change.
 > End users will need `tart login ghcr.io` with their own PAT before
@@ -282,7 +281,7 @@ fleet-sentinel https://YOUR-FLEET.example.com YOUR_ENROLL_SECRET
 
 Watch for:
 
-- `Cloning ghcr.io/ds0x/fleet-sentinel-debian:latest → fleet-sentinel`
+- `Cloning ghcr.io/ds0x/fleet-sentinel-ubuntu:latest → fleet-sentinel`
   (this pulls ~1.5 GB on first run; cached afterward)
 - `Building fleetd ARM64 .deb via fleetctl`
 - `Starting 'fleet-sentinel' headless`
@@ -311,7 +310,7 @@ Once Phase 6 works end-to-end:
   ```
 - **Image changes** (something in the VM itself):
   ```bash
-  tart delete fleet-sentinel-debian
+  tart delete fleet-sentinel-ubuntu
   cd ~/code/fleet-sentinel/golden
   ./build-golden.sh   # rebuild golden
   ./push-image.sh     # republish — same :latest tag overwrites
