@@ -27,10 +27,15 @@ export DEBIAN_FRONTEND=noninteractive
 # 1. Base updates. cirruslabs/ubuntu already ships curl, ssh-server, sudo,
 #    qemu-guest-agent, ca-certificates — so this is mostly upgrade + extras.
 # -----------------------------------------------------------------------------
-log "Updating apt + installing base utilities"
+log "Refreshing apt metadata + installing base utilities"
+# Note: we do NOT run `apt-get upgrade`. The cirruslabs/ubuntu base image's
+# cached metadata can lag behind ports.ubuntu.com's pool — i.e. the metadata
+# lists a package version whose .deb has already been GC'd from the mirror.
+# That manifests as 404s during upgrade. Since this image is going to be
+# managed by fleetd (which is what we're enrolling), the base just needs
+# to be functional, not patched-to-the-minute.
 apt-get update
-apt-get -y upgrade
-apt-get -y install --no-install-recommends \
+apt-get -y --fix-missing install --no-install-recommends \
   spice-vdagent \
   dbus-user-session \
   uuid-runtime jq
@@ -47,7 +52,7 @@ rm -rf /etc/cloud /var/lib/cloud
 # 3. Lightweight desktop
 # -----------------------------------------------------------------------------
 log "Installing XFCE + lightdm"
-apt-get -y install --no-install-recommends \
+apt-get -y --fix-missing install --no-install-recommends \
   xfce4 xfce4-terminal \
   lightdm lightdm-gtk-greeter \
   xserver-xorg-core xserver-xorg-video-fbdev \
@@ -56,23 +61,38 @@ apt-get -y install --no-install-recommends \
   network-manager network-manager-gnome \
   polkitd
 
+# Don't install pulseaudio (~30-50 MB) — image stays thin. The cosmetic
+# "Not connected to PulseAudio" complaint persists; it's a known XFCE
+# pre-startup notice that doesn't block anything. We CANNOT purge
+# xfce4-pulseaudio-plugin here: it's a hard Depends of the xfce4 meta
+# package, so removing the plugin cascades to remove xfce4 itself.
+
 systemctl enable lightdm.service
 
 # Autologin so the end user sees the desktop immediately when fleet-sentinel
 # switches to graphical mode.
+#
+# On Ubuntu 22.04, lightdm's autologin requires the user to be in the
+# `autologin` group (sometimes `nopasswdlogin`). Without that, lightdm
+# silently falls back to a normal login screen.
+groupadd -f autologin
+groupadd -f nopasswdlogin
+
 mkdir -p /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf <<EOF
 [Seat:*]
 autologin-user=fleet
 autologin-user-timeout=0
+autologin-session=xfce
 EOF
 
 # -----------------------------------------------------------------------------
 # 4. Create the 'fleet' user that the host wrapper SSHes in as
 # -----------------------------------------------------------------------------
-log "Creating user 'fleet'"
+log "Creating user 'fleet' (and adding to autologin/nopasswdlogin groups)"
 id fleet >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo fleet
 echo 'fleet:fleet' | chpasswd
+usermod -aG autologin,nopasswdlogin fleet
 echo 'fleet ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/90-fleet
 chmod 0440 /etc/sudoers.d/90-fleet
 
@@ -142,32 +162,9 @@ echo "=== enroll complete @ $(date -Is) ==="
 ENROLL
 
 # -----------------------------------------------------------------------------
-# 7. Remove the cirruslabs 'admin' user — we don't need two CI-style users
-#    in the published image. Comment this block out if you'd like to keep
-#    'admin' as a recovery login.
+# Cleanup that needs admin removed AND poweroff is handled by build-golden.sh
+# in a *separate* fleet-user SSH session. Doing it from here would kill our
+# own session: this script runs over `ssh admin@VM 'sudo bash setup-vm.sh'`,
+# and `deluser admin` cascades SIGHUP through the admin shell that owns us.
 # -----------------------------------------------------------------------------
-log "Removing cirruslabs 'admin' user"
-if id admin >/dev/null 2>&1; then
-  pkill -u admin 2>/dev/null || true
-  deluser --remove-home admin 2>/dev/null || userdel -r admin 2>/dev/null || true
-fi
-
-# -----------------------------------------------------------------------------
-# 8. Clean for image publication
-# -----------------------------------------------------------------------------
-log "Cleaning apt caches"
-apt-get -y autoremove --purge
-apt-get clean
-rm -rf /var/lib/apt/lists/*
-
-log "Truncating logs + zeroing identifiers"
-find /var/log -type f -exec truncate -s 0 {} \;
-> /etc/machine-id
-rm -f /var/lib/dbus/machine-id
-ln -s /etc/machine-id /var/lib/dbus/machine-id
-rm -f /etc/ssh/ssh_host_*    # sshd regenerates on next boot
-
-SWAPDEV=$(swapon --show=NAME --noheadings 2>/dev/null | head -n1 || true)
-[[ -n "$SWAPDEV" ]] && swapoff "$SWAPDEV" || true
-
-log "Setup complete. Shut down with: sudo shutdown -h now"
+log "Setup complete. build-golden.sh will now finalize via the fleet user."

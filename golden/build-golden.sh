@@ -79,22 +79,76 @@ sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
 sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${IP}" \
   'sudo bash /tmp/setup-vm.sh'
 
-echo "==> Shutting down for image publication"
-# We just removed the admin user; if that succeeded, this ssh will fail —
-# that's fine, shutdown -h will already have been requested OR we can fall
-# back to the fleet user.
-sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${IP}" \
-  'sudo shutdown -h now' 2>/dev/null \
-  || sshpass -p fleet ssh -o StrictHostKeyChecking=no "fleet@${IP}" \
-       'sudo shutdown -h now' 2>/dev/null \
-  || true
-
-# Wait up to 60s for the headless tart run to exit cleanly.
-for _ in $(seq 1 30); do
-  kill -0 $TART_PID 2>/dev/null || break
+# -----------------------------------------------------------------------------
+# Finalize from a fleet-user SSH session. Doing the admin-user deletion and
+# the identity-clearing from the admin session itself would kill our own SSH
+# (deluser admin SIGHUPs our shell). Hopping to fleet first sidesteps that.
+# -----------------------------------------------------------------------------
+echo "==> Verifying fleet user works"
+for _ in $(seq 1 15); do
+  sshpass -p fleet ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 \
+    "fleet@${IP}" true 2>/dev/null && break
   sleep 2
 done
-kill $TART_PID 2>/dev/null || true
+
+echo "==> Finalizing image as fleet user (remove admin, clean caches, zero IDs, poweroff)"
+sshpass -p fleet ssh -o StrictHostKeyChecking=no "fleet@${IP}" bash <<'FINALIZE'
+set -euo pipefail
+echo "--- removing cirruslabs admin user"
+if id admin >/dev/null 2>&1; then
+  sudo pkill -u admin 2>/dev/null || true
+  sleep 1
+  sudo deluser --remove-home admin 2>/dev/null || sudo userdel -r admin 2>/dev/null || true
+fi
+
+echo "--- apt clean + autoremove"
+sudo apt-get -y autoremove --purge
+sudo apt-get clean
+sudo rm -rf /var/lib/apt/lists/*
+
+echo "--- truncating logs + zeroing identifiers"
+sudo find /var/log -type f -exec truncate -s 0 {} \;
+sudo bash -c '> /etc/machine-id'
+sudo rm -f /var/lib/dbus/machine-id
+sudo ln -s /etc/machine-id /var/lib/dbus/machine-id
+sudo rm -f /etc/ssh/ssh_host_*    # sshd regenerates on next boot
+
+SWAPDEV=$(swapon --show=NAME --noheadings 2>/dev/null | head -n1 || true)
+if [[ -n "$SWAPDEV" ]]; then sudo swapoff "$SWAPDEV" || true; fi
+
+echo "--- powering off"
+sudo systemctl poweroff
+FINALIZE
+
+# Wait for the VM to actually be down. We poll for two things:
+#   (a) `tart ip` stops returning an address (definitive signal that the VM
+#       is no longer reachable on the network).
+#   (b) the headless `tart run` process exits.
+# Give it up to 90 s total — Ubuntu's shutdown can stall briefly on cgroup
+# teardown if cloud-init was incompletely purged.
+echo "    Waiting for VM to power off (up to 90s)…"
+for i in $(seq 1 45); do
+  if ! tart ip "$VM" >/dev/null 2>&1; then
+    # IP gone — VM is down or unreachable. Give the tart process a few more
+    # seconds to notice and exit.
+    for _ in $(seq 1 10); do
+      kill -0 $TART_PID 2>/dev/null || break 2
+      sleep 1
+    done
+    break
+  fi
+  sleep 2
+done
+
+# Only ungracefully kill if the VM truly didn't go down.
+if kill -0 $TART_PID 2>/dev/null; then
+  echo "    [!] VM did not power off cleanly within 90s — sending SIGTERM to tart"
+  echo "        (this can leave the image in a sub-optimal state; see BUILDER.md)"
+  kill $TART_PID 2>/dev/null || true
+  wait $TART_PID 2>/dev/null || true
+else
+  echo "    VM powered off cleanly."
+fi
 
 cat <<EOF
 

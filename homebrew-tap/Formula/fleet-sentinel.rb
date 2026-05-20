@@ -5,7 +5,7 @@
 #  repo literally named "homebrew-tap" under that account.)
 #
 # After publishing a release tarball at
-#   https://github.com/ds0x/fleet-sentinel/archive/refs/tags/v0.1.1.tar.gz
+#   https://github.com/ds0x/fleet-sentinel/archive/refs/tags/v0.1.0.tar.gz
 # update `url` and `sha256` below, commit, push the tap repo.
 #
 # End user installs:
@@ -13,10 +13,10 @@
 class FleetSentinel < Formula
   desc "Fleet-enrolled, GUI-ready Debian VM on Apple Silicon, in one command"
   homepage "https://github.com/ds0x/fleet-sentinel"
-  url "https://github.com/ds0x/fleet-sentinel/archive/refs/tags/v0.1.1.tar.gz"
-  sha256 "c4a38199cd88fea243d530f3a2ee40caf825bd23e87c15d6ae85f730e9d5ec47"
+  url "https://github.com/ds0x/fleet-sentinel/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "REPLACE_WITH_SHA256_OF_TARBALL"
   license "MIT"
-  version "0.1.1"
+  version "0.1.0"
 
   # Runtime dependencies. Homebrew pulls all three automatically.
   # NOTE: fleetctl isn't in homebrew-core (the `fleet-cli` formula in core is

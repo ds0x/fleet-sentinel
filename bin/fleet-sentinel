@@ -121,9 +121,11 @@ tart set "$VM_NAME" --memory "$RAM_MB" --cpu "$CPUS"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 say "Building fleetd ARM64 .deb via fleetctl"
+# --disable-open-folder: prevent fleetctl from popping Finder open after generation.
 ( cd "$WORK" && fleetctl package \
     --type=deb \
     --arch=arm64 \
+    --disable-open-folder \
     --fleet-url="$FLEET_URL" \
     --enroll-secret="$FLEET_ENROLL_SECRET" >/dev/null )
 DEB=$(ls "$WORK"/fleet-osquery_*_arm64.deb | head -n1)
@@ -177,6 +179,24 @@ REMOTE
 # Capture the new hostname so we can echo it for the user.
 NEWHOST=$(sshpass -p "$PASS_VM" ssh -o StrictHostKeyChecking=no "${USER_VM}@${IP}" hostname 2>/dev/null || echo "(unknown)")
 
+# Verify orbit is healthy. If not, surface the tail of the enroll log so the
+# user can see why instead of just being told it "should work."
+say "Verifying orbit is active"
+ORBIT_STATUS=$(sshpass -p "$PASS_VM" ssh -o StrictHostKeyChecking=no "${USER_VM}@${IP}" \
+  'systemctl is-active orbit.service 2>/dev/null' || true)
+if [[ "$ORBIT_STATUS" != "active" ]]; then
+  warn "orbit.service is not active (got: '$ORBIT_STATUS'). Diagnostic output:"
+  sshpass -p "$PASS_VM" ssh -o StrictHostKeyChecking=no "${USER_VM}@${IP}" bash <<'DIAG' >&2 || true
+echo "--- last 40 lines of /var/log/fleet-sentinel/enroll.log ---"
+sudo tail -n 40 /var/log/fleet-sentinel/enroll.log 2>/dev/null || echo "(log not found)"
+echo "--- systemctl status orbit ---"
+sudo systemctl status orbit.service --no-pager 2>&1 | head -n 25
+echo "--- last 40 lines of journalctl -u orbit ---"
+sudo journalctl -u orbit.service -n 40 --no-pager 2>&1 || true
+DIAG
+  warn "VM is still running so you can inspect: ssh fleet@${IP}  (password: fleet)"
+fi
+
 # -----------------------------------------------------------------------------
 # 5. GUI window (or stay headless)
 # -----------------------------------------------------------------------------
@@ -191,6 +211,9 @@ if [[ -z "$HEADLESS" ]]; then
   done
   kill $TART_PID 2>/dev/null || true
   tart run "$VM_NAME" &
+  # Bring Tart's window to the foreground. AVF can be slow to render the first
+  # frame; give it a beat before activating.
+  ( sleep 3 && osascript -e 'tell application "Tart" to activate' >/dev/null 2>&1 ) &
 fi
 
 cat <<EOF
