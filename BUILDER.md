@@ -112,6 +112,13 @@ a wrapper release.
 From a clean Mac that has only Homebrew:
 
 ```bash
+# Homebrew requires explicit consent for any cross-tap dependency, so users
+# need to tap both of these once before installing fleet-sentinel. Document
+# it prominently in the README — this is the most common first-install
+# stumble.
+brew tap cirruslabs/cli
+brew tap ds0x/fleetctl
+
 brew tap ds0x/tap
 brew install ds0x/tap/fleet-sentinel
 fleet-sentinel https://fleet.example.com  YOUR_TEST_SECRET

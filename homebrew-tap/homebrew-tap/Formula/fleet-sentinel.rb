@@ -38,10 +38,6 @@ class FleetSentinel < Formula
     <<~EOS
       fleet-sentinel needs Apple Silicon (M-series) to run Tart VMs.
 
-      Dependency taps (one-time consent, required by Homebrew):
-        brew tap cirruslabs/cli     # provides tart
-        brew tap ds0x/fleetctl      # provides fleetctl
-
       First use will pull the Ubuntu image (~1.8 GB) from ghcr.io:
         ghcr.io/ds0x/fleet-sentinel-ubuntu:latest
 

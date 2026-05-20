@@ -1,11 +1,21 @@
 # fleet-sentinel
 
-A Fleet-enrolled, GUI-ready Linux VM on Apple Silicon, in **one command**.
+A Fleet-enrolled, GUI-ready Linux VM on Apple Silicon, in **one command**
+(after a one-time tap of three Homebrew sources).
 
 ```bash
+# One-time setup: trust the taps Homebrew needs
+brew tap cirruslabs/cli     # provides tart
+brew tap ds0x/fleetctl      # provides fleetctl
 brew install ds0x/tap/fleet-sentinel
+
+# Run
 fleet-sentinel https://fleet.example.com  super-secret-enroll-key
 ```
+
+> Homebrew requires explicit consent for any tap it hasn't seen before, so
+> these `brew tap` calls are unavoidable for first-time installs. Subsequent
+> installs and upgrades skip them.
 
 Behind the scenes, that single line:
 
